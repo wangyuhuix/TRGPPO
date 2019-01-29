@@ -1,4 +1,4 @@
-# Trust Region-Guided Proximal Policy Optmization
+# Trust Region-Guided Proximal Policy Optimization
 
 Tensorflow implementation of Trust Region-Guided Proximal Policy Optmization (TRPPO). The original code was forked from [OpenAI baselines](https://github.com/openai/baselines).
 
