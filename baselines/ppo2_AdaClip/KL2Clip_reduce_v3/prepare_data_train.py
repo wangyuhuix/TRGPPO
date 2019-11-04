@@ -2,50 +2,72 @@ import time
 
 import numpy as np
 
-from baselines.common.tools import load_vars, save_vars
-from baselines.common import tools
+# from baselines.ppo2.prepare_data.tools import load_vars
+# from baselines.ppo2.prepare_data import tools
+
+
+
+from toolsm import tools
+from toolsm.tools import load_vars, save_vars
 import tensorflow as tf
 import pathos.multiprocessing as multiprocessing
 import os
+from warnings import warn
 
-
-def get_calculate_mu_func(ROBUST=True):
+def get_calculate_mu_func(ROBUST=False):
     def calculate_mu(args):
         import scipy
         from scipy.optimize import fsolve
         from scipy.special import lambertw
         mu_estimate, a, delta, flag = args
-        # flag = 0, max; flag = -1; min
-        f_mu_to_logsigma = lambda m: 0.5 * np.log((m - a) * (m ** 2 - a * m - 1) / a)
+
+        def func(m):
+
+            sigma = (m - a) * (m ** 2. - a * m - 1.) / a
+            result__ = -scipy.log(sigma) + sigma + m ** 2 - 1 - 2 * delta
+            # TODO: It will incur an error, and obtain complex64 or complex128 types
+            # TypeError: Cannot cast array data from dtype('complex128') to dtype('float64') according to the rule 'safe'
+            # if  result__.dtype == np.complex or result__.dtype == np.complex64:
+            #     raise Exception('complex value')
+                # result__ = result__.astype( np.float64 )
+                # print(result__, float(result__), result__.dtype)
+                # return None
+            return result__
+
+        def f_mu_to_logsigma(m):
+            return 0.5 * np.log((m - a) * (m ** 2 - a * m - 1) / a)
+
+        def get_real(m):
+            if isinstance(m, complex):
+                return m.real
+            return m
+
         if a == 0:
-            #     a = 1e-7
             # return 0, 0.5 * np.log(fsolve(lambda x: -scipy.log(x) + x - 1 - 2 * delta, 0.))
             # return 0, 0.5 * np.log(-delta * lambertw((2 - delta) / (delta * np.e)) / (delta - 2))
-            return 0, 0.5 * np.log(-lambertw(-np.e ** (-2 * delta - 1), k=int(flag)))
-
-        def func(x):
-            # now: x is mu
-            sigma = (x - a) * (x ** 2. - a * x - 1.) / a
-            return -scipy.log(sigma) + sigma + x ** 2 - 1 - 2 * delta
-
-        if ROBUST:
-            try:
-                mu_solution = fsolve(func, mu_estimate, full_output=False)
-            except Exception as e:
-                print(delta, mu_estimate, a)
-                mu_solution = [np.NAN]
-            return mu_solution, f_mu_to_logsigma(mu_solution)
+            # return 0, 0.5 * np.log(-lambertw(-np.e ** (-2 * delta - 1), k=int(flag)))
+            mu_sol = 0
+            logsigma_sol = get_real( 0.5 * np.log(-lambertw(-np.e ** (-2 * delta - 1), k=int(flag))) )
         else:
-            try:
-                mu_solution = fsolve(func, mu_estimate, full_output=False)
-                # print(f'action: {a},  mu_estimate: {mu_estimate}, mu_solution: {mu_solution} , delta: {delta}')
-            except Exception as e:
-                # print(f'action: {a},  mu_estimate: {mu_estimate},  delta: {delta}')
-                # print(e)
-                return 0, 0.5 * np.log(-lambertw(-np.e ** (-2 * delta - 1), k=int(flag)))
-                # exit()
-            return mu_solution, f_mu_to_logsigma(mu_solution)
+            if ROBUST:
+                try:
+                    mu_sol = fsolve(func, mu_estimate, full_output=False)
+                    logsigma_sol = f_mu_to_logsigma(mu_sol)
+                except Exception as e:
+                    warn(f'KL2clip calculate_mu error, return NAN! action: {a},  mu_estimate: {mu_estimate},  delta: {delta}')
+                    mu_sol = np.NAN
+                    logsigma_sol = np.NAN
+            else:
+                try:
+                    mu_sol = fsolve(func, mu_estimate, full_output=False)
+                    # print('----End')
+                    logsigma_sol = f_mu_to_logsigma(mu_sol)
+                except Exception as e:
+                    # warn(f'KL2clip calculate_mu error, return zero! action: {a},  mu_estimate: {mu_estimate},  delta: {delta}')
+                    mu_sol = 0
+                    logsigma_sol = get_real(0.5 * np.log(-lambertw(-np.e ** (-2 * delta - 1), k=int(flag))))
 
+        return mu_sol, logsigma_sol
     return calculate_mu
 
 

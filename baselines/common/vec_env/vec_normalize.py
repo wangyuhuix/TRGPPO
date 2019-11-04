@@ -8,7 +8,7 @@ class VecNormalize(VecEnvWrapper):
     """
     Vectorized environment base class
     """
-    def __init__(self, venv, ob=True, ret=True, clipob=10., cliprew=10., gamma=0.99, epsilon=1e-8):
+    def __init__(self, venv, ob=True, ret=True, clipob=10., cliprew=10., gamma=0.99, epsilon=1e-8, reward_scale=1., update=True):
         VecEnvWrapper.__init__(self, venv)
         self.ob_rms = RunningMeanStd(shape=self.observation_space.shape) if ob else None
         self.ret_rms = RunningMeanStd(shape=()) if ret else None
@@ -18,6 +18,8 @@ class VecNormalize(VecEnvWrapper):
         self.gamma = gamma
         self.epsilon = epsilon
         self.variables_name_save = ['clipob','cliprew','ret','gamma', 'epsilon'  ]
+        self.reward_scale = reward_scale
+        self.update = update
 
 
     def load(self, path):
@@ -46,15 +48,31 @@ class VecNormalize(VecEnvWrapper):
         """
         obs, rews, news, infos = self.venv.step_wait()
         self.ret = self.ret * self.gamma + rews
+        self._obs_real = obs.copy()
+
         obs = self._obfilt(obs)
-        if self.ret_rms:
-            self.ret_rms.update(self.ret)
-            rews = np.clip(rews / np.sqrt(self.ret_rms.var + self.epsilon), -self.cliprew, self.cliprew)
+        rews = self._rewfilt( rews )
+        rews *= self.reward_scale
         return obs, rews, news, infos
+
+    @property
+    def obs_real(self):
+        assert self._obs_real is not None, 'Only obtained for one time after step. Make sure you have execute step()'
+        obs = self._obs_real
+        self._obs_real = None
+        return obs
+
+    def _rewfilt(self, rews):
+        if self.ret_rms:
+            if self.update:
+                self.ret_rms.update(self.ret)
+            rews = np.clip(rews / np.sqrt(self.ret_rms.var + self.epsilon), -self.cliprew, self.cliprew)
+        return rews
 
     def _obfilt(self, obs):
         if self.ob_rms:
-            self.ob_rms.update(obs)
+            if self.update:
+                self.ob_rms.update(obs)
             obs = np.clip((obs - self.ob_rms.mean) / np.sqrt(self.ob_rms.var + self.epsilon), -self.clipob, self.clipob)
             return obs
         else:
@@ -66,6 +84,11 @@ class VecNormalize(VecEnvWrapper):
         """
         obs = self.venv.reset()
         return self._obfilt(obs)
+
+    # def clone_kernel_from(self, obj):
+    #     assert isinstance(obj, type(self) )
+    #     self.ob_rms = obj.ob_rms
+    #     self.ret_rms = obj.ret_rms
 
 
 

@@ -1,7 +1,7 @@
 import tensorflow as tf
 import numpy as np
 import baselines.common.tf_util as U
-from baselines.common.utils import fc
+from baselines.a2c.utils import fc
 from tensorflow.python.ops import math_ops
 
 class Pd(object):
@@ -34,7 +34,7 @@ class PdType(object):
         raise NotImplementedError
     def pdfromflat(self, flat):
         return self.pdclass()(flat)
-    def pdfromlatent(self, latent_vector):
+    def pdfromlatent(self, latent_vector,**kwargs):
         raise NotImplementedError
     def param_shape(self):
         raise NotImplementedError
@@ -45,20 +45,26 @@ class PdType(object):
 
     def param_placeholder(self, prepend_shape, name=None):
         return tf.placeholder(dtype=tf.float32, shape=prepend_shape+self.param_shape(), name=name)
-    def sample_placeholder(self, prepend_shape, name=None):
-        return tf.placeholder(dtype=self.sample_dtype(), shape=prepend_shape+self.sample_shape(), name=name)
+    def sample_placeholder(self, prepend_shape, name=None, default_value=None):
+        if default_value is None:
+            return tf.placeholder(dtype=self.sample_dtype(), shape=prepend_shape+self.sample_shape(), name=name)
+        else:
+            return tf.placeholder_with_default(default_value, shape=prepend_shape+self.sample_shape(), name=name)
 
 class CategoricalPdType(PdType):
     def __init__(self, ncat):
         self.ncat = ncat
+
     def pdclass(self):
         return CategoricalPd
-    def pdfromlatent(self, latent_vector, init_scale=1.0, init_bias=0.0):
+
+    def pdfromlatent(self, latent_vector, init_scale=1.0, init_bias=0.0, **kwargs):
         pdparam = fc(latent_vector, 'pi', self.ncat, init_scale=init_scale, init_bias=init_bias)
         return self.pdfromflat(pdparam), pdparam
 
     def param_shape(self):
         return [self.ncat]
+
     def sample_shape(self):
         return []
     def sample_dtype(self):
@@ -85,9 +91,15 @@ class DiagGaussianPdType(PdType):
     def pdclass(self):
         return DiagGaussianPd
 
-    def pdfromlatent(self, latent_vector, init_scale=1.0, init_bias=0.0):
+    def pdfromlatent(self, latent_vector, init_scale=1.0, init_bias=0.0, latent_logstd=None, logstd_initial=0.):
+        # TODO: Add **kwargs to other PdType
         mean = fc(latent_vector, 'pi', self.size, init_scale=init_scale, init_bias=init_bias)
-        logstd = tf.get_variable(name='logstd', shape=[1, self.size], initializer=tf.zeros_initializer())
+        if latent_logstd is not None:
+            logstd = fc(latent_logstd, 'logstd', self.size, init_scale=0.0, init_bias=logstd_initial)
+        else:
+            # logstd = tf.get_variable(name='logstd', shape=[1, self.size], initializer=tf.zeros_initializer() )
+            logstd = tf.get_variable(name='logstd', shape=[1, self.size], initializer=tf.constant_initializer(logstd_initial))
+        self.logstd = logstd
         pdparam = tf.concat([mean, mean * 0.0 + logstd], axis=1)
         return self.pdfromflat(pdparam), mean
 
@@ -97,6 +109,44 @@ class DiagGaussianPdType(PdType):
         return [self.size]
     def sample_dtype(self):
         return tf.float32
+
+class BetaPdType(PdType):
+    def __init__(self, size):
+        self.size = size
+    def pdclass(self):
+        return BetaPd
+    # def pdfromlatent(self, latent_vector, init_scale=1.0, init_bias=0.0):
+        # mean = fc(latent_vector, 'pi', self.size, init_scale=init_scale, init_bias=init_bias)
+        # logstd = tf.get_variable(name='logstd', shape=[1, self.size], initializer=tf.zeros_initializer())
+        # pdparam = tf.concat([mean, mean * 0.0 + logstd], axis=1)
+        # return self.pdfromflat(pdparam), mean
+
+    def param_shape(self):
+        return [2*self.size]
+    def sample_shape(self):
+        return [self.size]
+    def sample_dtype(self):
+        return tf.float32
+
+class MultimodalPdType(PdType):
+    def __init__(self, size):
+        self.size = size
+    def pdclass(self):
+        return MultimodalPd
+    # def pdfromlatent(self, latent_vector, init_scale=1.0, init_bias=0.0):
+    #     mean = fc(latent_vector, 'pi', 2 * self.size, init_scale=init_scale, init_bias=init_bias)
+    #     logstd = tf.get_variable(name='logstd', shape=[1, 2 * self.size], initializer=tf.zeros_initializer())
+    #     alpha = tf.get_variable(name='alpha', shape=[1, self.size], initializer=tf.random_normal_initializer())
+    #     pdparam = tf.concat([mean, mean * 0.0 + logstd, alpha], axis=1)
+    #     return self.pdfromflat(pdparam), mean
+
+    def param_shape(self):
+        return [5*self.size]
+    def sample_shape(self):
+        return [self.size]
+    def sample_dtype(self):
+        return tf.float32
+
 
 class BernoulliPdType(PdType):
     def __init__(self, size):
@@ -196,18 +246,27 @@ class MultiCategoricalPd(Pd):
         raise NotImplementedError
 
 class DiagGaussianPd(Pd):
-    '''
-        Note that the paramter is logstd, not logsigma
-    '''
-    def __init__(self, flat, std_type='log'):
+    def __init__(self, flat, var_type='logstd'):
         self.flat = flat
-        mean, var_std = tf.split(axis=len(flat.shape)-1, num_or_size_splits=2, value=flat)
+        mean, var_term = tf.split(axis=len(flat.shape)-1, num_or_size_splits=2, value=flat)
         self.mean = mean
-        if std_type == 'log':
-            logstd = var_std
-            std = tf.exp(var_std)
-        elif std_type == 'sqrt':
-            std = tf.square( var_std )
+        '''
+            std: standard deviation
+            var: var=std^2. variance
+            logstd: log(std)
+            logvar: log(var)
+        '''
+        if var_type == 'logstd':
+            logstd = var_term
+            std = tf.exp(var_term)
+        elif var_type == 'std':
+            std = var_term
+            logstd = tf.log(std)
+        elif var_type == 'logvar':
+            logstd = var_term /2
+            std = tf.exp(var_term)
+        elif var_type == 'var':
+            std = tf.sqrt(var_term)
             logstd = tf.log(std)
         else:
             raise  NotImplementedError
@@ -228,7 +287,7 @@ class DiagGaussianPd(Pd):
 
     def wasserstein(self, other):
         assert isinstance(other, DiagGaussianPd)
-        return tf.reduce_sum( tf.square(self.mean-other.mean) + self.std+other.std - 2*tf.sqrt(self.std*other.std) , axis=-1 )
+        return tf.reduce_sum( tf.square(self.mean-other.mean) + tf.square(self.std-other.std ) , axis=-1)
 
     def entropy(self):
         return tf.reduce_sum(self.logstd + .5 * np.log(2.0 * np.pi * np.e), axis=-1)
@@ -244,6 +303,79 @@ class DiagGaussianPd(Pd):
     def fromflat(cls, flat):
         return cls(flat)
 
+class BetaPd(Pd):
+    '''
+        Note that the paramter is logstd, not logsigma
+    '''
+    def __init__(self, flat, std_type='log'):
+        self.flat = flat
+        alpha, beta = tf.split(axis=len(flat.shape)-1, num_or_size_splits=2, value=flat)
+        self.alpha = alpha# = tf.squeeze(alpha)
+        #beta = tf.squeeze(beta)
+        tfd = tf.contrib.distributions
+        self._pd = tfd.Beta(alpha, beta)
+        self.low, self.high = 0., 5. # map the beta dist support (0, 1) to (low, high)
+
+
+    def flatparam(self):
+        return self.flat
+
+    def neglogp(self, x):
+        # x = tf.squeeze(x)
+        return -tf.log(self._pd.prob(self._inverse_map_to_support(x)) / (self.high - self.low))
+
+    def sample(self, sample_shape=None):
+        # shape_new = tf.shape(self.alpha)
+        # if sample_shape is not None:
+        #     if not isinstance( sample_shape, list ) or not isinstance( sample_shape, tuple):
+        #         sample_shape = [sample_shape]
+        #     shape_new = tf.concat( ( sample_shape, shape_new ), axis=0 )
+        #
+        # return self.mean + self.std * tf.random_normal(shape_new)
+
+        return tf.expand_dims(self._map_to_support(self._pd.sample()), 0)
+
+    def _map_to_support(self, x):
+        # map the beta dist support (0, 1) to (low, high)
+        return self.low + x * (self.high - self.low)
+
+    def _inverse_map_to_support(self, x):
+        return (x - self.low) / (self.high - self.low)
+
+    @classmethod
+    def fromflat(cls, flat):
+        return cls(flat)
+
+class MultimodalPd(Pd):
+    def __init__(self, flat, std_type='log'):
+        self.flat = flat
+        self.mean1, self.mean2, self.logstd1, self.logstd2, self.alpha = tf.split(axis=len(flat.shape)-1,
+                                                                                  num_or_size_splits=5, value=flat)
+        self.std1 = tf.exp(self.logstd1)
+        self.std2 = tf.exp(self.logstd2)
+        self.alpha = tf.sigmoid(self.alpha)
+        self.alpha = tf.squeeze(self.alpha, 0)
+
+        self._pdtype = DiagGaussianPdType(self.mean1.shape[0])
+        self._pd1 = self._pdtype.pdfromflat(tf.concat([self.mean1, self.logstd1], axis=-1))
+        self._pd2 = self._pdtype.pdfromflat(tf.concat([self.mean2, self.logstd2], axis=-1))
+
+    def flatparam(self):
+        return self.flat
+    def mode(self):
+        return self.mean1, self.mean2
+    def neglogp(self, x):
+        # return tf.squeeze(-tf.log(self.alpha * tf.exp(-self._pd1.neglogp(x)) + (1 - self.alpha) * tf.exp(-self._pd2.neglogp(x))), 0)
+        # return -tf.log(self.alpha * tf.exp(-self._pd1.neglogp(x)) + (1 - self.alpha) * tf.exp(-self._pd2.neglogp(x)))
+
+        return -tf.log(self.alpha * self._pd1.p(x) + (1 - self.alpha) * self._pd2.p(x))
+
+    def sample(self, sample_shape=None):
+        return self.alpha * self._pd1.sample() + (1 - self.alpha) * self._pd2.sample()
+
+    @classmethod
+    def fromflat(cls, flat):
+        return cls(flat)
 
 class BernoulliPd(Pd):
     def __init__(self, logits):
@@ -271,6 +403,25 @@ def make_pdtype(ac_space):
     if isinstance(ac_space, spaces.Box):
         assert len(ac_space.shape) == 1
         return DiagGaussianPdType(ac_space.shape[0])
+    elif isinstance(ac_space, spaces.Discrete):
+        return CategoricalPdType(ac_space.n)
+    elif isinstance(ac_space, spaces.MultiDiscrete):
+        return MultiCategoricalPdType(ac_space.nvec)
+    elif isinstance(ac_space, spaces.MultiBinary):
+        return BernoulliPdType(ac_space.n)
+    else:
+        raise NotImplementedError
+
+def make_pdtype_bandit(ac_space, policy_type):
+    from gym import spaces
+    if isinstance(ac_space, spaces.Box):
+        assert len(ac_space.shape) == 1
+        if policy_type == 'Gaussian':
+            return DiagGaussianPdType(ac_space.shape[0])
+        elif policy_type == 'Beta':
+            return BetaPdType(ac_space.shape[0])
+        elif policy_type == 'Multimodal':
+            return MultimodalPdType(ac_space.shape[0])
     elif isinstance(ac_space, spaces.Discrete):
         return CategoricalPdType(ac_space.n)
     elif isinstance(ac_space, spaces.MultiDiscrete):

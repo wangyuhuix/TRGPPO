@@ -92,8 +92,7 @@ def mujoco_arg_parser():
     parser.add_argument('--seed', help='RNG seed', type=int, default=0)
     parser.add_argument('--num-timesteps', type=int, default=int(1e6))
     parser.add_argument('--play', default=False, action='store_true')
-    parser.add_argument('--clipped-type', default='origin', type=str)
-    parser.add_argument('--log-dir', default='/media/d/e/e/et/baselines/tmp/', type=str)
+    parser.add_argument('--force_write', default=0, type=int)
     return parser
 
 

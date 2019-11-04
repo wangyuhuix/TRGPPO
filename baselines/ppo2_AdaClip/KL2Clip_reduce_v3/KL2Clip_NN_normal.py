@@ -12,9 +12,10 @@ import pathos.multiprocessing as multiprocessing
 
 import tensorflow as tf
 
-import baselines.TRPPO.KL2Clip_reduce_v3.prepare_data_train as prepare_data
+import baselines.ppo2_AdaClip.KL2Clip_reduce_v3.prepare_data_train as prepare_data
 import matplotlib as mpl
 from mpl_toolkits.mplot3d import Axes3D
+from toolsm import tools
 import numpy as np
 import baselines.common.tf_util as U
 # path_root = '/media/d/e/et/baselines'
@@ -22,13 +23,14 @@ from baselines.common.distributions import DiagGaussianPd
 
 import os
 import pandas as pd
-from baselines.common import tools
+from toolsm import tools
 
 TabularActionPrecision = 5
 
-# path_root = '../../KL2Clip'
-path_root = os.path.abspath('./KL2Clip')
-
+import baselines
+path_root = tools.get_logger_dir('baselines/KL2Clip', baselines, 'results/KL2Clip' )
+# print(path_root)
+# exit()
 _BATCH_NORM_DECAY = 0.997
 _BATCH_NORM_EPSILON = 1e-5
 
@@ -45,7 +47,7 @@ def batch_norm_relu(inputs, is_training):
     return inputs
 
 
-from baselines.common import tools_process
+from toolsm import process as tools_process
 
 path_root_tabular = f'{path_root}/tabular'
 tools.mkdir(path_root_tabular)
@@ -79,14 +81,13 @@ class KL2Clip_tabular(object):
 
     def create_tabular(self, delta):
         time0 = time.time()
-        print(f'start to generate tabular of delta: {delta} Taburlar action precision{10 ** (-TabularActionPrecision)}')
+        print(f'Start to generate tabular for delta={delta}. action precision=10^{-TabularActionPrecision}')
         nn = KL2Clip_NN()
         actions = np.arange(0, 5, 10 ** (-TabularActionPrecision))
-        ratio_min, ratio_max, min_mu_logsigma_fsolve, max_mu_logsigma_fsolve = \
+        ratio_min, ratio_max, min_mu_logstd_fsolve, max_mu_logstd_fsolve = \
             nn(action=actions, delta=delta, initialwithpresol=self.createtablur_initialwithpresol)
         # 注意这里一定要指定actions为float32 不然默认float64 后面用Dataframe索引时会有bug
-        tabular = {np.float64(actions[i].__round__(TabularActionPrecision)): (ratio_min[i], ratio_max[i]) for i in
-                   range(actions.shape[0])}
+        tabular = {np.float64(actions[i].__round__(TabularActionPrecision)): (ratio_min[i], ratio_max[i]) for i in range(actions.shape[0])}
         df = pd.DataFrame(data=tabular, dtype=np.float32)
         time0 = time.time() - time0
         print(f'Successfully generate tabular, with time {time0}s')
@@ -96,7 +97,7 @@ class KL2Clip_tabular(object):
         df = self.get_tabular(delta=delta)
         if action.ndim == 2:
             action = np.squeeze(action, 0)
-        assert action.ndim == 1 and np.all(action >= 0)
+        assert action.ndim == 1 and np.all(action>=0)
         action = np.clip(action, 0, 4.99999).astype(np.float64)
         action = np.round(action, TabularActionPrecision)
         # print('df.head:\n', df.head())
@@ -124,14 +125,10 @@ class KL2Clip_NN(object):
         self.session_config = tf.ConfigProto()
         self.session_config.gpu_options.allow_growth = True
 
-        self.path_model = f'{path_root}/model/{self.dir}'
-        folder_contents = os.listdir(self.path_model)
-        must_in_folder = ['checkpoint', 'model.ckpt-408582.data-00000-of-00001', 'model.ckpt-408582.index']
-        for i in must_in_folder:
-            if not any(i in _ for _ in folder_contents):
-                print('tensorflow estimator models missing !!!')
-                exit()
-
+        self.path_model = f'{path_root}/model/reduce_v3/{self.dir}'
+        self.path_model = f'{path_root}/model/reduce_v3/{self.dir}'
+        for f_ in ['model.ckpt-408582.data-00000-of-00001', 'model.ckpt-408582.index','checkpoint']:
+            assert os.path.exists(f'{self.path_model}/{f_}'), f'{self.path_model}/{f_} not exist'
         self.pool = multiprocessing.Pool(4)
         self.regressor = tf.estimator.Estimator(
             model_fn=my_model,
@@ -148,35 +145,35 @@ class KL2Clip_NN(object):
                 'action_space': 1
             })
 
-        def get_ratios(batch_size):
-
+        # -- fn_ratio
+        def get_fn_ratio():
+            batch_size = None
             action = tf.placeholder(shape=[batch_size, 1], dtype=tf.float32)
-            mu_logsigma_min = tf.placeholder(shape=[batch_size, 2], dtype=tf.float32)
-            mu_logsigma_max = tf.placeholder(shape=[batch_size, 2], dtype=tf.float32)
-
-            x0 = tf.zeros(shape=[batch_size, 2])
+            mu_logstd_min = tf.placeholder(shape=[batch_size, 2], dtype=tf.float32)
+            mu_logstd_max = tf.placeholder(shape=[batch_size, 2], dtype=tf.float32)
+            x0 = tf.zeros_like( mu_logstd_min )
             distNormal = DiagGaussianPd(x0)
-            dist_min, dist_max = DiagGaussianPd(mu_logsigma_min), DiagGaussianPd(mu_logsigma_max)
+            dist_min, dist_max = DiagGaussianPd(mu_logstd_min), DiagGaussianPd(mu_logstd_max)
             ratio_min = dist_min.p(action) / distNormal.p(action)
             ratio_max = dist_max.p(action) / distNormal.p(action)
-            fn_ratio = U.function([action, mu_logsigma_min, mu_logsigma_max], (ratio_min, ratio_max))
+            fn_ratio = U.function([action, mu_logstd_min, mu_logstd_max], (ratio_min, ratio_max))
             return fn_ratio
 
-        self._get_ratios = get_ratios
+        self.fn_ratio = get_fn_ratio()
 
         if not tf.get_default_session():
-            from baselines.TRPPO.KL2Clip_reduce.preparedata_KL2Clip_opt_tf import KL2Clip
+            from baselines.ppo2_AdaClip.KL2Clip_reduce.preparedata_KL2Clip_opt_tf import KL2Clip
             self.sess = KL2Clip.create_session()
             self.sess.__enter__()  # TODO: tmp
         else:
             self.sess = None
 
-    def __del__(self):
-        if self.sess is not None:
-            self.sess.__exit__(None, None, None)
+    # def __del__(self):
+    #     if self.sess is not None:
+    #         self.sess.__exit__(None, None, None)
 
     def train(self, batch_size=200, epoch=10):
-        # neural network (input: 1D-action, delta*D^{-1})   (output: mu, logsigma)
+        # neural network (input: 1D-action, delta*D^{-1})   (output: mu, logstd)
         # --- load data
         train_x, train_y, train_weight, eval_x, eval_y, eval_weight = prepare_data.load_data_normal(self.path_data,
                                                                                                     USE_MULTIPROCESSING=False)
@@ -269,7 +266,7 @@ class KL2Clip_NN(object):
         batch_size = action.shape[0]
         # action[action <= 1e-3] = 1e-3  # TODO: debug!!!!!
         if initialwithpresol:
-            print('Optimize with ordered action')
+            print('Optimize with ordered actions!')
             action_t = action[-1:]
             # action_t = action
             predict_x = dict(input=np.stack((action_t, delta * np.ones_like(action_t)), axis=1),
@@ -298,62 +295,57 @@ class KL2Clip_NN(object):
             if initialwithpresol:
                 '''
                     用之前优化的解去作为新的解的初始解
-                    由于这个优化问题当a=0的时候得到的初始mu都一样（logsigma不一样，这是因为问题在a=0和a!=0的时候要解的不是一个式子）
+                    由于这个优化问题当a=0的时候得到的初始mu都一样（logstd不一样，这是因为问题在a=0和a!=0的时候要解的不是一个式子）
                     所以下面是用倒序的方法计算
                 '''
                 print('Initialize with Previous Solutions!')
 
                 sol_ini = min_mu_tf_estimator[-1]
-                min_mu_logsigma_fsolve = []
+                min_mu_logstd_fsolve = []
                 cnt_all = action_clip.shape[0]
-                for ind, args in enumerate(reversed(list(zip(action_clip, delta * np.ones_like(action_clip),
-                                                             -1 * np.ones_like(action_clip))))):
-                    sol = calculate_mu([sol_ini] + list(args))
-                    sol_ini = sol[0]  # sol=(mu,logsigma)
-                    min_mu_logsigma_fsolve.append(sol)
-                    tools.print_refresh(f'min:{ind}/{cnt_all}')
-                min_mu_logsigma_fsolve.reverse()
+                for ind,args in enumerate(reversed(list(zip( action_clip, delta * np.ones_like(action_clip),
+                                          -1 * np.ones_like(action_clip))))):
+
+                    sol = calculate_mu([sol_ini]+list(args))
+                    sol_ini = sol[0]#sol=(mu,logstd)
+                    min_mu_logstd_fsolve.append(sol)
+                    tools.print_refresh(f'Preparing Upper Clipping Range:{ind+1}/{cnt_all}')
+                min_mu_logstd_fsolve.reverse()
 
                 print('')
                 sol_ini = max_mu_tf_estimator[-1]
-                max_mu_logsigma_fsolve = []
-                for ind, args in enumerate(reversed(list(zip(action_clip, delta * np.ones_like(action_clip),
-                                                             0 * np.ones_like(action_clip))))):
-                    sol = calculate_mu([sol_ini] + list(args))
+                max_mu_logstd_fsolve = []
+                for ind,args in enumerate(reversed(list(zip(action_clip, delta * np.ones_like(action_clip),
+                                          0 * np.ones_like(action_clip))))):
+                    sol = calculate_mu([sol_ini]+list(args))
                     sol_ini = sol[0]
-                    max_mu_logsigma_fsolve.append(sol)
-                    tools.print_refresh(f'min:{ind}/{cnt_all}')
-                max_mu_logsigma_fsolve.reverse()
+                    max_mu_logstd_fsolve.append(sol)
+                    tools.print_refresh(f'Preparing Lower Clipping Range:{ind+1}/{cnt_all}')
+                max_mu_logstd_fsolve.reverse()
                 print('')
             else:
-                min_mu_logsigma_fsolve = list(
+                min_mu_logstd_fsolve = list(
                     map(calculate_mu, zip(min_mu_tf_estimator, action_clip, delta * np.ones_like(action_clip),
                                           -1 * np.ones_like(action_clip))))
-                max_mu_logsigma_fsolve = list(
+                max_mu_logstd_fsolve = list(
                     map(calculate_mu, zip(max_mu_tf_estimator, action_clip, delta * np.ones_like(action_clip),
                                           0 * np.ones_like(action_clip))))
 
-        min_mu_logsigma_fsolve = np.asarray(min_mu_logsigma_fsolve)
-        max_mu_logsigma_fsolve = np.asarray(max_mu_logsigma_fsolve)
+        # tools.save_vars( '/media/d/e/baselines/baselines/ppo2_AdaClip/t/a.pkl', min_mu_logstd_fsolve, max_mu_logstd_fsolve )
 
-        # print(min_mu_logsigma_fsolve)  # TODO: logsigma有问题！
+        min_mu_logstd_fsolve = np.array(min_mu_logstd_fsolve, dtype=np.float64)
+        max_mu_logstd_fsolve = np.array(max_mu_logstd_fsolve, dtype=np.float64)
 
-        if np.asarray(min_mu_logsigma_fsolve).ndim == 3:
-            min_mu_logsigma_fsolve = min_mu_logsigma_fsolve.squeeze()
-            max_mu_logsigma_fsolve = max_mu_logsigma_fsolve.squeeze()
-        if np.asarray(min_mu_logsigma_fsolve).ndim == 1:
-            min_mu_logsigma_fsolve = np.expand_dims(min_mu_logsigma_fsolve, 0)
-            max_mu_logsigma_fsolve = np.expand_dims(max_mu_logsigma_fsolve, 0)
+        # print(min_mu_logstd_fsolve)  # TODO: logstd有问题！
 
-        fn_ratio = self._get_ratios(batch_size)
-        ratio_min, ratio_max = fn_ratio(np.expand_dims(action, 1), min_mu_logsigma_fsolve, max_mu_logsigma_fsolve)
-
-        # if self.sess is not None:
-        #     self.sess.__enter__()
-        # ratio_min, ratio_max = fn_ratio(action, mu_logsigma_min, mu_logsigma_max)
-        # if self.sess is not None:
-        #     self.sess.__exit__()
-        return ratio_min, ratio_max, min_mu_logsigma_fsolve, max_mu_logsigma_fsolve
+        if min_mu_logstd_fsolve.ndim == 3:
+            min_mu_logstd_fsolve = min_mu_logstd_fsolve.squeeze()
+            max_mu_logstd_fsolve = max_mu_logstd_fsolve.squeeze()
+        if min_mu_logstd_fsolve.ndim == 1:
+            min_mu_logstd_fsolve = np.expand_dims(min_mu_logstd_fsolve, 0)
+            max_mu_logstd_fsolve = np.expand_dims(max_mu_logstd_fsolve, 0)
+        ratio_min, ratio_max = self.fn_ratio(np.expand_dims(action, 1), min_mu_logstd_fsolve, max_mu_logstd_fsolve)
+        return ratio_min, ratio_max, min_mu_logstd_fsolve, max_mu_logstd_fsolve
 
 
 def my_model(features, labels, mode, params):
@@ -415,19 +407,20 @@ if __name__ == '__main__':
     kl2clip = KL2Clip_tabular(createtablur_initialwithpresol=False)
     kl2clip_ordered = KL2Clip_tabular(createtablur_initialwithpresol=True)
     tf.logging.set_verbosity(tf.logging.INFO)
+    from toolsm import tools
 
     # a, b = tools.load_vars('../t/a.pkl')
     #
     # exit()
-    a = np.arange(0, 4, 0.1)
+    a = np.arange(0,4,0.1)
     for D in [1]:
         tools.reset_time()
-        sol1 = kl2clip_ordered(a, delta=0.1 / D)
+        sol1 = kl2clip_ordered(a, delta=0.1/D )
         tools.print_time()
 
         tools.reset_time()
         sol2 = kl2clip(a, delta=0.1 / D)
-        print(sol1[0] == sol2[0])
+        print(sol1[0]==sol2[0])
         print(sol1[1] == sol2[1])
         tools.print_time()
         # tools.save_vars('../t/a.pkl',a,b)

@@ -1,12 +1,12 @@
 from pathos import multiprocessing
-from baselines.common.tools import load_vars
+from tools import load_vars
 from dotmap import DotMap
 
 import os
 import time
 
 import numpy as np
-from baselines.common import tools
+from toolsm import tools
 import matplotlib.pyplot as plt
 from tensorflow.python.framework import ops
 from multiprocessing import Pool
@@ -16,9 +16,9 @@ from baselines.common.distributions import DiagGaussianPd
 import tensorflow as tf
 from tensorflow.contrib.constrained_optimization import ConstrainedMinimizationProblem, AdditiveExternalRegretOptimizer
 
-from baselines.common import plt_tools
+import plt_tools
 
-from baselines.common.tools import save_vars
+from tools import save_vars
 
 # path_root = '/root/d/e/et/baselines'
 path_root = '/home/hugo/Desktop/wxm'

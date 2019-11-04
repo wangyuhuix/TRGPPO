@@ -7,6 +7,8 @@ class RunningMeanStd(object):
         self.count = epsilon
         self.variables_name_save = [ 'mean','var','count', ]
 
+
+    # TODO: refer to the code of soft actor critic for more elegent writing.
     def save(self ):
         variables = []
         for v in self.variables_name_save:
