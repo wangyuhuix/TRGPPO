@@ -28,7 +28,9 @@ from toolsm import tools
 TabularActionPrecision = 5
 
 import baselines
-path_root = tools.get_logger_dir('baselines/KL2Clip', baselines, 'results/KL2Clip' )
+from toolsm import logger
+path_root = logger.get_logger_dir('baselines/KL2Clip', baselines, 'results/KL2Clip' )
+
 # print(path_root)
 # exit()
 _BATCH_NORM_DECAY = 0.997
@@ -81,7 +83,7 @@ class KL2Clip_tabular(object):
 
     def create_tabular(self, delta):
         time0 = time.time()
-        print(f'Start to generate tabular for delta={delta}. action precision=10^{-TabularActionPrecision}')
+        print(f'start to generate tabular of delta: {delta} Taburlar action precision{10 ** (-TabularActionPrecision)}')
         nn = KL2Clip_NN()
         actions = np.arange(0, 5, 10 ** (-TabularActionPrecision))
         ratio_min, ratio_max, min_mu_logstd_fsolve, max_mu_logstd_fsolve = \
@@ -266,7 +268,7 @@ class KL2Clip_NN(object):
         batch_size = action.shape[0]
         # action[action <= 1e-3] = 1e-3  # TODO: debug!!!!!
         if initialwithpresol:
-            print('Optimize with ordered actions!')
+            print('Optimize with ordered action')
             action_t = action[-1:]
             # action_t = action
             predict_x = dict(input=np.stack((action_t, delta * np.ones_like(action_t)), axis=1),
@@ -309,7 +311,7 @@ class KL2Clip_NN(object):
                     sol = calculate_mu([sol_ini]+list(args))
                     sol_ini = sol[0]#sol=(mu,logstd)
                     min_mu_logstd_fsolve.append(sol)
-                    tools.print_refresh(f'Preparing Upper Clipping Range:{ind+1}/{cnt_all}')
+                    tools.print_refresh(f'min:{ind}/{cnt_all}')
                 min_mu_logstd_fsolve.reverse()
 
                 print('')
@@ -320,7 +322,7 @@ class KL2Clip_NN(object):
                     sol = calculate_mu([sol_ini]+list(args))
                     sol_ini = sol[0]
                     max_mu_logstd_fsolve.append(sol)
-                    tools.print_refresh(f'Preparing Lower Clipping Range:{ind+1}/{cnt_all}')
+                    tools.print_refresh(f'min:{ind}/{cnt_all}')
                 max_mu_logstd_fsolve.reverse()
                 print('')
             else:

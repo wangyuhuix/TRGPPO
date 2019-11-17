@@ -47,9 +47,9 @@ class KL2Clip(object):
     def tes_atzero(self):
         batch_size = 1
         dim = 1
-        # cliprange = 0.2
-        # ress = self(mu0_logstd0=(np.zeros((batch_size, dim), dtype=np.float32), np.zeros((batch_size, dim))),
-        #             a=np.zeros((batch_size, dim)), adjusttype=Adjust_Type.base_clip_lower, cliprange=cliprange, silent=True)
+        cliprange = 0.2
+        ress = self(mu0_logstd0=(np.zeros((batch_size, dim), dtype=np.float32), np.zeros((batch_size, dim))),
+                    a=np.zeros((batch_size, dim)), adjusttype=Adjust_Type.base_clip_lower, cliprange=cliprange, silent=True)
         # print(ress.ratio.min[0])
 
 
@@ -147,14 +147,24 @@ class KL2Clip(object):
         #------ Adjust delta by specified cliprange
         if isinstance(adjusttype, str):
             adjusttype = Adjust_Type[adjusttype]
-        # TODO: 根据adjusttype来判断应该用什么
-        if delta is None:
+
+
+        if adjusttype == Adjust_Type.origin:
+            assert delta is not None
+            if not hasattr(self,'delta') or self.delta != delta:
+                self.delta = delta
+                tools.warn_(
+                    f'delta={delta} (adjustdelta_type={adjusttype.name}, dim={dim})')
+        else:
+            assert delta is None and cliprange is not None
             delta = self.cliprange2delta( cliprange, dim, adjusttype )
+            # Set delta first time, print the warning information
             if not hasattr(self,'delta') or self.delta != delta:
                 self.delta = delta
                 if verbose:
                     tools.warn_(
                         f'Set delta={delta} to make cliprange={cliprange} (adjustdelta_type={adjusttype.name}, dim={dim})')
+
         # Obtain result
         sigma0 = np.exp(logstd0)
         z = (a-mu0)/ sigma0

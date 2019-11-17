@@ -37,7 +37,10 @@ def load_env_fn(env):
             env.load(load_path + '.env')
 
     return load_env
+
+
 import baselines.common.tf_util as U
+
 
 class Model(object):
     def __init__(self, *, policy, ob_space, ac_space, nbatch_act, nbatch_train,
@@ -63,12 +66,26 @@ class Model(object):
 
         act_model = policy(sess, ob_space, ac_space, nbatch_act, nsteps=1, reuse=False, **additional_args)
         train_model = policy(sess, ob_space, ac_space, nbatch_train, nsteps=nsteps, reuse=True, **additional_args)
-        if args.eval_model:
-            self.eval_policy = policy(sess, ob_space, ac_space, args.n_eval_epsiodes, nsteps=1, reuse=True, **additional_args)
+        if args.n_eval_epsiodes > 0:
+            self.eval_policy = policy(sess, ob_space, ac_space, args.n_eval_epsiodes, nsteps=1, reuse=True,
+                                      **additional_args)
+            # ------- For copy Policy
+            # self.eval_policy = eval_policy = policy(sess, ob_space, ac_space, args.n_eval_epsiodes, nsteps=1, reuse=False, name='policy_eval', **additional_args)
+            # params_eval = eval_policy.variables_trainable
+            # placeholders_params= [ tf.placeholder( dtype=v.dtype, shape=v.shape ) for v in params_eval ]
+            # self.assign_eval_policy = U.function(inputs=placeholders_params,outputs=[], updates=[tf.assign(v, v_input) for (v, v_input) in zip(params_eval, placeholders_params)])
+            # self.get_params_train = U.function( inputs=[], outputs=act_model.variables_trainable )
+            # self.get_params_eval = U.function(inputs=[], outputs=eval_policy.variables_trainable )
+            # ------ End------
 
 
-
-
+            # for p in params:
+            #     print( p.name )
+            # for p in eval_policy.variables_all:
+            #     print(p.name)
+            # exit()
+            # tools.save_vars( '/media/d/e/baselines_workingon/baselines/ppo2_AdaClip/t/a.pkl', params )
+            # exit()
 
         self.OBS = OBS = train_model.X
         self.ACTIONS = ACTIONS = train_model.pdtype.sample_placeholder([None])
@@ -76,14 +93,13 @@ class Model(object):
         self.RETURNS = RETURNS = tf.placeholder(tf.float32, [None])
         self.NEGLOGPACS_OLD = NEGLOGPACS_OLD = tf.placeholder(tf.float32, [None])
         self.VALUES_OLD = VALUES_OLD = tf.placeholder(tf.float32, [None])
-        self.LR =  LR = tf.placeholder(tf.float32, [])
-        self.CLIPRANGE =  CLIPRANGE = tf.placeholder(tf.float32, [])
+        self.LR = LR = tf.placeholder(tf.float32, [])
+        self.CLIPRANGE = CLIPRANGE = tf.placeholder(tf.float32, [])
         self.KLRANGE = KLRANGE = tf.placeholder(tf.float32, [])
         self.CLIPRANGE_LOWER = CLIPRANGE_LOWER = tf.placeholder(tf.float32, [None])
         self.CLIPRANGE_UPPER = CLIPRANGE_UPPER = tf.placeholder(tf.float32, [None])
         self.KL_COEF = KL_COEF = tf.placeholder(tf.float32, [])
-
-
+        self.RANGE = RANGE = tf.placeholder(tf.float32, [])
 
         neglogpac = train_model.pd.neglogp(ACTIONS)
         entropy = tf.reduce_mean(train_model.pd.entropy())
@@ -106,6 +122,8 @@ class Model(object):
         self.POLICYFLATS_OLD = POLICYFLATS_OLD = tf.placeholder(tf.float32, shape=flat_shape, name='old_policyflat')
         old_pd = train_model.pdtype.pdfromflat(POLICYFLATS_OLD)
         kl = old_pd.kl(new_pd)
+        if hasattr(old_pd, 'wasserstein'):
+            wasserstein = old_pd.wasserstein(new_pd)
         if cliptype in [ClipType.kl2clip, ClipType.adaptiverange_advantage]:
             pg_losses = -ADVS * ratio
             pg_losses2 = -ADVS * tf.clip_by_value(ratio, CLIPRANGE_LOWER, CLIPRANGE_UPPER)
@@ -128,18 +146,37 @@ class Model(object):
         trainer = tf.train.AdamOptimizer(learning_rate=LR, epsilon=1e-5)
         _train = trainer.apply_gradients(grads)
 
-        def train( **kwargs):
+        def train(**kwargs):
 
             feed_dict = dict()
             for key, value in kwargs.items():
-                feed_dict.update({ getattr(self,key.upper()): value})
+                feed_dict.update({getattr(self, key.upper()): value})
+            # td_map = {
+            #     CLIPRANGE: cliprange,
+            #     OBS: obs, ACTIONS: actions, ADV: advs, RETURNS: returns, LR: lr,
+            #     NEGLOGPACS_OLD: neglogpacs, VALUES_OLD: values,
+            #     POLICYFALTS_OLD: policyflats
+            # }
+            #
+            # if cliptype == ClipType.kl2clip:
+            #     assert cliprange_lower is not None and cliprange_upper is not None
+            #     td_map.update({CLIPRANGE_LOWER: cliprange_lower, CLIPRANGE_UPPER: cliprange_upper})
+            # elif cliptype == ClipType.adaptivekl:
+            #     assert kl_coef is not None
+            #     td_map.update({KL_COEF: kl_coef})
+
+
+            # TODO: train_model.S .modify to STATES
+            # recurrent version
+            # if states is not None:
+            #     td_map[train_model.S] = states
+            #     td_map[train_model.M] = masks
             return sess.run(
                 [pg_loss, vf_loss, entropy, approxkl, clipfrac, kl, ratio, _train],
                 feed_dict
             )[:-1]
 
         self.loss_names = ['policy_loss', 'value_loss', 'policy_entropy', 'approxkl', 'clipfrac']
-
 
         # def restore_summary_writer(graph_dir: str) -> tf.summary.FileWriter:
         #     return tf.summary.FileWriter.reopen()
@@ -170,11 +207,7 @@ class Model(object):
         tf.global_variables_initializer().run(session=sess)  # pylint: disable=E1101
 
 
-
-
-
 class Runner(AbstractEnvRunner):
-
     def __init__(self, *, env, model, nsteps, gamma, lam):
         super().__init__(env=env, model=model, nsteps=nsteps)
         self.lam = lam
@@ -185,7 +218,7 @@ class Runner(AbstractEnvRunner):
         mb_states = self.states
         epinfos = []
         # mb_obs_next = []
-        mb_obs_next= None
+        mb_obs_next = None
         for _ in range(self.nsteps):
             actions, values, self.states, neglogpacs, policyflats = self.model.step(self.obs, self.states, self.dones)
             mb_obs.append(self.obs.copy())
@@ -218,7 +251,7 @@ class Runner(AbstractEnvRunner):
         mb_advs = np.zeros_like(mb_rewards)
         lastgaelam = 0
         for t in reversed(range(self.nsteps)):
-            if t == self.nsteps - 1: # Last Timestep
+            if t == self.nsteps - 1:  # Last Timestep
                 nextnonterminal = 1.0 - self.dones
                 nextvalues = last_values
             else:
@@ -244,22 +277,22 @@ def sf01(arr):
 def constfn(val):
     def f(_):
         return val
+
     return f
 
 
 
     # gradient_rectify = 7
 
+
 from baselines.ppo2_AdaClip.algs import *
 from toolsm import tools
+
+
 def learn(*, policy, env, env_eval, n_steps, total_timesteps, ent_coef, lr,
           vf_coef=0.5, max_grad_norm=0.5, gamma=0.99, lam=0.95,
           log_interval=1, nminibatches=4, n_opt_epochs=4,
           save_interval=10, load_path=None, cliptype=None, args=None):
-
-
-
-
     if isinstance(lr, float):
         lr = constfn(lr)
     else:
@@ -289,91 +322,83 @@ def learn(*, policy, env, env_eval, n_steps, total_timesteps, ent_coef, lr,
 
     runner = Runner(env=env, model=model, nsteps=n_steps, gamma=gamma, lam=lam)
 
-    if args.eval_model:
+    if args.n_eval_epsiodes > 0:
         evaluator = Evaluator()
 
     # tfwriter = tf.summary.FileWriter(args.log_dir)
 
     if cliptype in [ClipType.kl2clip, ClipType.kl2clip_rollback]:
         # from baselines.ppo2_AdaClip.KL2Clip.KL2Clip_opt_tf import get_clip_new
-        # TODO: move to kl2clip
-        notNoneA = args.clipargs.klrange is not None
-        notNoneB = args.clipargs.cliprange is not None
-        if notNoneA:
-            assert args.clipargs.adjusttype == 'origin'
-        else:
-            assert notNoneA != notNoneB #不能同时为空
 
         if isinstance(env.action_space, gym.spaces.box.Box):
             from baselines.ppo2_AdaClip.KL2Clip_reduce_v3.KL2Clip_reduce import KL2Clip, Adjust_Type
             kl2clip = KL2Clip(opt1Dkind=args.clipargs.kl2clip_opttype)
-            # kl2clip.tes_atzero()
+
+            args.clipargs.adjusttype = Adjust_Type[args.clipargs.adjusttype]
+            if '2constant' in args.clipargs.adaptive_range:  # TODO: alg args
+                dim = ac_space.shape[0]
+                if args.clipargs.adjusttype == Adjust_Type.origin:
+                    delta = args.clipargs.delta
+                else:
+                    delta = kl2clip.cliprange2delta(args.clipargs.cliprange, ac_space.shape[0],
+                                                    args.clipargs.adjusttype)
+
+                cliprange_upper_min = 1 + kl2clip.delta2cliprange(delta, dim=ac_space.shape[0],
+                                                                  adjusttype='base_clip_upper')
+                cliprange_lower_max = 1 - kl2clip.delta2cliprange(delta, dim=ac_space.shape[0],
+                                                                  adjusttype='base_clip_lower')
+            if args.clipargs.cliprange is None:
+                assert isinstance(env.action_space, gym.spaces.box.Box)
+                args.clipargs.cliprange = kl2clip.delta2cliprange(args.clipargs.klrange, dim=ac_space.shape[0],
+                                                                  adjusttype=args.clipargs.adjusttype)
+                tools.print_(
+                    f'The provided cliprange is None. Set cliprange={args.clipargs.cliprange} by klrange={args.clipargs.klrange}, dim={ac_space.shape[0]}',
+                    color='magenta')
         elif isinstance(env.action_space, gym.spaces.discrete.Discrete):
             # TODO: Atari上cliprange是不断减小的,那么delta也应该不断减小
-            raise NotImplementedError('Please review the code.....')
+            # raise NotImplementedError('Please review the code.....')
             from baselines.ppo2_AdaClip.KL2Clip_discrete.KL2Clip_discrete import KL2Clip
             kl2clip = KL2Clip(opt1Dkind=args.clipargs.kl2clip_opttype)
         else:
             raise NotImplementedError('Please run atari or mujoco!')
-
-        args.clipargs.adjusttype = Adjust_Type[args.clipargs.adjusttype]
-        if '2constant' in args.clipargs.adaptive_range:#TODO: alg args
-            dim = ac_space.shape[0]
-            if args.clipargs.adjusttype == Adjust_Type.origin:
-                delta = args.clipargs.delta
-            else:
-                delta = kl2clip.cliprange2delta(   args.clipargs.cliprange,ac_space.shape[0], args.clipargs.adjusttype   )
-
-            cliprange_upper_min = 1+kl2clip.delta2cliprange( delta, dim=ac_space.shape[0], adjusttype='base_clip_upper' )
-            cliprange_lower_max = 1-kl2clip.delta2cliprange( delta, dim=ac_space.shape[0], adjusttype='base_clip_lower' )
-            # print(delta, cliprange_upper_min, cliprange_lower_max, 1./cliprange_lower_max )
-        # else:
-        #     assert args.clipargs.adaptive_range == ''
-
-        if args.clipargs.cliprange is None:
-            assert isinstance(env.action_space, gym.spaces.box.Box)
-            args.clipargs.cliprange = kl2clip.delta2cliprange(args.clipargs.klrange, dim=ac_space.shape[0], adjusttype=args.clipargs.adjusttype)
-            tools.print_( f'The provided cliprange is None. Set cliprange={args.clipargs.cliprange} by klrange={args.clipargs.klrange}, dim={ac_space.shape[0]}', color='magenta' )
     elif cliptype == ClipType.adaptivekl:
         kl_coef = 1.
         kl_targ = args.clipargs.klrange
 
-
-
     if args.env_type == MUJOCO:
         cliprange = args.clipargs.cliprange
     elif args.env_type == ATARI:
-        cliprange = lambda f: f*args.clipargs.cliprange if args.clipargs.cliprange is not None else None
+        cliprange = lambda f: f * args.clipargs.cliprange if args.clipargs.cliprange is not None else None
 
     if isinstance(cliprange, float) or cliprange is None:
         cliprange = constfn(cliprange)
     else:
         assert callable(cliprange)
 
-
     # alphas_kl2clip_decay = np.zeros(nupdates, dtype=np.float32)
     # alphas_kl2clip_decay[0:nupdates // 3] = 1
     # alphas_kl2clip_decay[nupdates // 3:] = np.linspace(1, -0.5, nupdates - nupdates // 3)
     from toolsm.logger import Logger
-    logformats = ['csv','tensorflow', 'log']
+    logformats = ['csv', 'tensorflow', 'log']
     if not args.is_multiprocess:
         logformats.append('stdout')
     else:
-        logger_multiprocess = Logger( ['stdout'])
-    logger = Logger( logformats , path=args.log_dir, file_basename='process' )
+        logger_multiprocess = Logger(['stdout'])
+    logger = Logger(logformats, path=args.log_dir, file_basename='process')
 
     epinfobuf = deque(maxlen=100)
 
     nupdates = total_timesteps // nbatch
     performance_max = -np.inf
+    print(f'nupdates:{nupdates},eval_interval:{args.eval_interval}')
     tstart_ini = time.time()
     for update in range(1, nupdates + 1):
         tstart = time.time()
         assert nbatch % nminibatches == 0
-        debugs = dict( iteration=update )
+        debugs = dict(iteration=update)
         nbatch_train = nbatch // nminibatches
 
-        frac = (update-1) * 1. / nupdates
+        frac = (update - 1) * 1. / nupdates
         # frac_remain = 1.0 - (update - 1.0) / nupdates
         frac_remain = 1.0 - frac
         lrnow = lr(frac_remain)
@@ -398,7 +423,6 @@ def learn(*, policy, env, env_eval, n_steps, total_timesteps, ent_coef, lr,
             epinfobuf.clear()
         epinfobuf.extend(epinfos)
 
-
         # ----------------- Prepare for training: update clipping range, etc.
         cliprangenow = cliprange(frac_remain)
         # old version: unknown meaning....TODO: figure out the meaning
@@ -418,56 +442,59 @@ def learn(*, policy, env, env_eval, n_steps, total_timesteps, ent_coef, lr,
             )
         elif cliptype in [ClipType.kl2clip, ClipType.kl2clip_rollback]:
             pas = np.exp(-neglogpacs)
-            lossvals = kl2clip(
-                mu0_logstd0=policyflats, a=actions, pas=pas,
-                delta=args.clipargs.klrange,
-                adjusttype=args.clipargs.adjusttype, cliprange=args.clipargs.cliprange,
-                require_sol = False,
-                verbose = 1
-                # sharelogstd=args.clipargs, clip_clipratio=args.kl2clip_clip_clipratio,
-            )
-            cliprange_upper = lossvals.ratio.max
-            cliprange_lower = lossvals.ratio.min
-            # save clip range to create heat map
 
-            '''
-            if args.kl2clip_decay:
-                alpha = alphas_kl2clip_decay[update - 1]
-                print(f'kl2clip_decay_current:{alpha}')
-                cliprange_max, cliprange_min = get_clip_new(alpha, cliprange_max, cliprange_min,
-                                                            clipcontroltype=args.kl2clip_clipcontroltype)
-            '''
+            if isinstance(env.action_space, gym.spaces.box.Box):
+                results_kl2clip = kl2clip(
+                    mu0_logstd0=policyflats, a=actions, pas=pas,
+                    delta=args.clipargs.klrange,
+                    adjusttype=args.clipargs.adjusttype, cliprange=args.clipargs.cliprange,
+                    require_sol=False,
+                    verbose=1
+                    # sharelogstd=args.clipargs, clip_clipratio=args.kl2clip_clip_clipratio,
+                )
+                cliprange_upper = results_kl2clip.ratio.max
+                cliprange_lower = results_kl2clip.ratio.min
 
+                if args.clipargs.adaptive_range == '2constant':
+                    cliprange_upper = cliprange_upper - (cliprange_upper - cliprange_upper_min) * frac
+                    cliprange_lower = cliprange_lower + (cliprange_lower_max - cliprange_lower) * frac
+                    # TODO: debug tmp
+                    debugs['cliprange_upper_min'] = cliprange_upper_min
+                    debugs['cliprange_lower_max'] = cliprange_lower_max
+                elif args.clipargs.adaptive_range == '2cliprange_final':
+                    cliprange_final = args.clipargs.cliprange_final
+                    cliprange_upper = cliprange_upper - (cliprange_upper - (1 + cliprange_final)) * frac
+                    cliprange_lower = cliprange_lower + ((1 - cliprange_final) - cliprange_lower) * frac
+                elif args.clipargs.adaptive_range == '2constant_upper':
+                    cliprange_upper = cliprange_upper - (cliprange_upper - cliprange_upper_min) * frac
+                    # TODO: debug tmp
+                    debugs['cliprange_upper_min'] = cliprange_upper_min
+                    debugs['cliprange_lower_max'] = cliprange_lower_max
+                # elif args.clipargs.adaptive_range == '2cliprange':
+                #     # TODO: cliprange may be none....
+                #     cliprange_upper = cliprange_upper - (cliprange_upper- (1+args.clipargs.cliprange))*frac
+                #     cliprange_lower = cliprange_lower + ((1-args.clipargs.cliprange) - cliprange_lower )*frac
+                elif args.clipargs.adaptive_range == 'clip2cliprange':
+                    frac_threshold = args.clipargs.frac_threshold
+                    if frac >= frac_threshold:
+                        cliprange_upper[:] = 1 + args.clipargs.cliprange
+                        cliprange_lower[:] = 1 - args.clipargs.cliprange
+            elif isinstance(env.action_space, gym.spaces.discrete.Discrete):
+                results_kl2clip = kl2clip(
+                    pas=pas,
+                    delta=args.clipargs.klrange,
+                    verbose=1
+                )
+                cliprange_upper = results_kl2clip.ratio.max
+                cliprange_lower = results_kl2clip.ratio.min
 
-            if args.clipargs.adaptive_range == '2constant':
-                cliprange_upper = cliprange_upper - (cliprange_upper-cliprange_upper_min)*frac
-                cliprange_lower = cliprange_lower + (cliprange_lower_max-cliprange_lower)*frac
-                # TODO: debug tmp
-                debugs['cliprange_upper_min'] = cliprange_upper_min
-                debugs['cliprange_lower_max'] = cliprange_lower_max
-            elif args.clipargs.adaptive_range == '2cliprange_final':
-                cliprange_final = args.clipargs.cliprange_final
-                cliprange_upper = cliprange_upper - (cliprange_upper- (1+cliprange_final) )*frac
-                cliprange_lower = cliprange_lower + ((1-cliprange_final)-cliprange_lower)*frac
-            elif args.clipargs.adaptive_range == '2constant_upper':
-                cliprange_upper = cliprange_upper - (cliprange_upper-cliprange_upper_min)*frac
-                # TODO: debug tmp
-                debugs['cliprange_upper_min'] = cliprange_upper_min
-                debugs['cliprange_lower_max'] = cliprange_lower_max
-            # elif args.clipargs.adaptive_range == '2cliprange':
-            #     # TODO: cliprange may be none....
-            #     cliprange_upper = cliprange_upper - (cliprange_upper- (1+args.clipargs.cliprange))*frac
-            #     cliprange_lower = cliprange_lower + ((1-args.clipargs.cliprange) - cliprange_lower )*frac
-            elif args.clipargs.adaptive_range == 'clip2cliprange':
-                frac_threshold = args.clipargs.frac_threshold
-                if frac >= frac_threshold:
-                    cliprange_upper[:] = 1+args.clipargs.cliprange
-                    cliprange_lower[:] = 1-args.clipargs.cliprange
-
-            if isinstance(env.action_space, gym.spaces.Discrete):
-                raise NotImplemented('Please review the code')
                 cliprange_upper = 1 + (cliprange_upper - 1) * frac_remain
                 cliprange_lower = 1 - (1. - cliprange_lower) * frac_remain
+
+            # if isinstance(env.action_space, gym.spaces.Discrete):
+            #     raise NotImplemented('Please review the code')
+            #     cliprange_upper = 1 + (cliprange_upper - 1) * frac_remain
+            #     cliprange_lower = 1 - (1. - cliprange_lower) * frac_remain
 
 
             debugs['cliprange_upper'] = cliprange_upper
@@ -479,15 +506,15 @@ def learn(*, policy, env, env_eval, n_steps, total_timesteps, ent_coef, lr,
         elif cliptype == ClipType.adaptiverange_advantage:
             cliprange_max = args.clipargs.cliprange_max
             # positive
-            advs_positive = advs[advs>0]
-            adv_upper = np.median(advs_positive) * 2#use median, avoide the affect of overlarge values
-            cliprange_upper = np.minimum( np.abs(advs), adv_upper)
+            advs_positive = advs[advs > 0]
+            adv_upper = np.median(advs_positive) * 2  # use median, avoide the affect of overlarge values
+            cliprange_upper = np.minimum(np.abs(advs), adv_upper)
             cliprange_upper = 1 + cliprange_upper / cliprange_upper.max() * cliprange_max
 
-            advs_negative = advs[advs<0]
-            adv_lower = np.median(advs_negative) *2
-            cliprange_lower = np.maximum( -np.abs(advs), adv_lower )
-            cliprange_lower = 1 - cliprange_lower/cliprange_lower.min() * cliprange_max
+            advs_negative = advs[advs < 0]
+            adv_lower = np.median(advs_negative) * 2
+            cliprange_lower = np.maximum(-np.abs(advs), adv_lower)
+            cliprange_lower = 1 - cliprange_lower / cliprange_lower.min() * cliprange_max
 
             debugs['cliprange_upper'] = cliprange_upper
             debugs['cliprange_lower'] = cliprange_lower
@@ -495,15 +522,18 @@ def learn(*, policy, env, env_eval, n_steps, total_timesteps, ent_coef, lr,
                 cliprange_upper=cliprange_upper,
                 cliprange_lower=cliprange_lower,
             )
-        elif cliptype in [ClipType.kl, ClipType.kl_ratiorollback, ClipType.kl_klrollback_constant, ClipType.kl_klrollback, ClipType.kl_strict]:
+        elif cliptype in [ClipType.kl, ClipType.kl_ratiorollback, ClipType.kl_klrollback_constant,
+                          ClipType.kl_klrollback, ClipType.kl_strict]:
             klrange = args.clipargs.klrange
             if 'decay_threshold' in args.clipargs.keys():
                 decay_threshold = args.clipargs.decay_threshold
                 if frac >= decay_threshold:
-                    coef_ = frac_remain/(1-decay_threshold)
+                    coef_ = frac_remain / (1 - decay_threshold)
                     klrange *= coef_
                     # print(f'frac={frac},frac_remain={frac_remain},coef_={coef_},decay_threshold={decay_threshold},klrange:{klrange}')
-            kwargs_in_scalar.update( klrange = klrange  )
+            kwargs_in_scalar.update(klrange=klrange)
+        elif cliptype in [ClipType.wasserstein, ClipType.wasserstein_wassersteinrollback_constant]:
+            kwargs_in_scalar.update(range=args.clipargs.range)
         # ----------------- Train the model
         mblossvals = []
         if states is None:  # nonrecurrent version
@@ -519,9 +549,9 @@ def learn(*, policy, env, env_eval, n_steps, total_timesteps, ent_coef, lr,
                     for key in kwargs_in_arr.keys():
                         kwargs_in_batch[key] = kwargs_in_arr[key][mbinds]
 
-                    *lossvals, kl, ratio = model.train(**kwargs_in_scalar,**kwargs_in_batch)
+                    *lossvals, kl, ratio = model.train(**kwargs_in_scalar, **kwargs_in_batch)
                     mblossvals.append(lossvals)
-                    if ind_epoch == n_opt_epochs -1:# only add it at the last opt_epoch
+                    if ind_epoch == n_opt_epochs - 1:  # only add it at the last opt_epoch
                         kls.append(kl)
                         ratios.append(ratio)
             # --- restore the order of kls and ratios to the original order
@@ -552,21 +582,29 @@ def learn(*, policy, env, env_eval, n_steps, total_timesteps, ent_coef, lr,
                     mbstates = states[mbenvinds]
                     mblossvals.append(model.train(lrnow, cliprangenow, *slices, mbstates))
         if args.save_debug:
-            tools.save_vars( osp.join(args.log_dir, 'debugs.pkl'), debugs, append=update > 1 )
+            tools.save_vars(osp.join(args.log_dir, 'debugs.pkl'), debugs, append=update > 1)
 
         # -------------- Log the result
 
         lossvals = np.mean(mblossvals, axis=0)
+        is_eprewmean_better = False
         eprewmean_eval = None
-        if ( (update - 1) % args.eval_interval == 0) and env_eval is not None:
-            eprewmean_eval = evaluator.eval( env_eval, env, model, args, update )
-            eprewmean_eval = safemean([epinfo['r'] for epinfo in eprewmean_eval])
+        eplenmean_eval = None
+        if args.n_eval_epsiodes > 0 and \
+                (
+                            (args.eval_interval > 0 and ((update - 1) % args.eval_interval == 0))
+                        or
+                            (args.eval_interval < 0 and update == nupdates)
+                ):
+            result_eval = evaluator.eval(env_eval, env, model, args, update)
+            eprewmean_eval = safemean([epinfo['r'] for epinfo in result_eval])
+            eplenmean_eval = safemean([epinfo['l'] for epinfo in result_eval])
             if eprewmean_eval > performance_max:
                 is_eprewmean_better = True
                 performance_max = eprewmean_eval
 
-        if save_interval and ( (update -1 ) % save_interval == 0 or update == nupdates or is_eprewmean_better
-        ):
+        if save_interval and ((update - 1) % save_interval == 0 or update == nupdates or is_eprewmean_better
+                              ):
             savepath = osp.join(args.model_dir, '%.5i' % update)
             # print('Saving to', savepath)
             model.save(savepath)
@@ -574,12 +612,13 @@ def learn(*, policy, env, env_eval, n_steps, total_timesteps, ent_coef, lr,
         if update % log_interval == 0 or update == 1:
             ev = explained_variance(values, returns)
             eprewmean = safemean([epinfo['r'] for epinfo in epinfobuf])
+            eplenmean = safemean([epinfo['l'] for epinfo in epinfobuf])
             timesteps = update * nbatch
             tnow = time.time()
             time_oneupdate = tnow - tstart
             fps = int(nbatch / time_oneupdate)
 
-            if args.is_multiprocess and ( (update-1) % (args.eval_interval*2) == 0):
+            if args.is_multiprocess:  # and ( (update-1) % (args.eval_interval*2) == 0)
                 # TODO: 改成log, print reward_eval
                 logger_multiprocess.log_keyvalues(
                     update=update,
@@ -587,26 +626,28 @@ def learn(*, policy, env, env_eval, n_steps, total_timesteps, ent_coef, lr,
                     timesteps=timesteps,
                     time_oneupdate=time_oneupdate,
                     eprewmean=eprewmean,
-                    eprewmean_eval=eprewmean_eval
+                    eprewmean_eval=eprewmean_eval,
+                    time=tools.time_now_str('%H:%M:%S')
                 )
                 # tools.print_( f'timesteps:{timesteps},time_oneupdate:{time_oneupdate},eprewmean:{eprewmean},eprewmean_eval:{eprewmean_eval}', color='magenta' )
 
             logger.log_keyvalue(
-                global_step = timesteps,
-                serial_timesteps =update * n_steps,
-                nupdates = update,
-                total_timesteps = timesteps,
-                fps = fps,
-                explained_variance = float(ev),
-                eprewmean = eprewmean,
-                eprewmean_eval = eprewmean_eval,
-                eplenmean = safemean([epinfo['l'] for epinfo in epinfobuf]),
-                time_elapsed = tnow - tstart_ini,
-                time_oneupdate = time_oneupdate
+                global_step=timesteps,
+                nupdates=update,
+                fps=fps,
+                eprewmean=eprewmean,
+                eplenmean=eplenmean,
+                eprewmean_eval=eprewmean_eval,
+                eplenmean_eval=eplenmean_eval,
+                explained_variance=float(ev),
+                time_elapsed=tnow - tstart_ini,
+                time_oneupdate=time_oneupdate,
+                serial_timesteps=update * n_steps,
+                total_timesteps=timesteps,
             )
             for (lossval, lossname) in zip(lossvals, model.loss_names):
-                logger.log_keyvalue( **{lossname:lossval} )
-            
+                logger.log_keyvalue(**{lossname: lossval})
+
             logger.dump_keyvalues()
 
 
@@ -622,15 +663,13 @@ def learn(*, policy, env, env_eval, n_steps, total_timesteps, ent_coef, lr,
             elif kl_mean > kl_targ * 1.5:
                 kl_coef *= 2
 
-
-
     if args.model_dir is not None:
         import shutil
         for d in args.zip_dirs:
             d_path = args[f'{d}_dir']
-            if len(tools.get_files( d_path ))> 2:
-                shutil.make_archive( base_name=d_path, format='zip', root_dir=d_path )
-                tools.safe_delete( d_path , confirm=False, require_not_containsub=False )
+            if len(tools.get_files(d_path)) > 2:
+                shutil.make_archive(base_name=d_path, format='zip', root_dir=d_path)
+                tools.safe_delete(d_path, confirm=False, require_not_containsub=False)
 
     env.close()
     return model
@@ -638,7 +677,6 @@ def learn(*, policy, env, env_eval, n_steps, total_timesteps, ent_coef, lr,
 
 def safemean(xs):
     return np.nan if len(xs) == 0 else np.mean(xs)
-
 
 
 class Evaluator():
@@ -650,7 +688,6 @@ class Evaluator():
         # self.model = model
         # self.assign_policy = model.assign_policy_eval_eq_train
         # self.policy = model.eval_policy
-
 
     def eval(self, env_eval, env_train, model, args, update):
         # from copy import deepcopy
@@ -667,19 +704,19 @@ class Evaluator():
 
         eval_policy = model.eval_policy
         # start process
-        epinfos = rollout( env_eval, eval_policy, evaluate_times=args.n_eval_epsiodes, deterministic=True )
+        epinfos = rollout(env_eval, eval_policy, evaluate_times=args.n_eval_epsiodes, deterministic=True,
+                          verbose=(args.env_type == ATARI))
         # print(f'update:{update}, epinfos:{epinfos}')
         # rewards_epi = [ epinfo['r'] for epinfo in epinfos ]
         return epinfos
 
 
-def rollout(env, policy, evaluate_times=1, deterministic=True):
+def rollout(env, policy, evaluate_times=1, deterministic=True, verbose=0):
     import itertools
 
     epinfos = []
     obs = env.reset()
     # rewards_episode = []
-
     for t in itertools.count():
         # tools.print_refresh(t)
         if not deterministic:
@@ -688,15 +725,24 @@ def rollout(env, policy, evaluate_times=1, deterministic=True):
             actions, *_ = policy.step_test(obs)
 
         obs[:], reward, dones, infos = env.step(actions)
+        # env.render()
         # cnt_dones += dones.sum()
         # If it is done, it will contains a key 'episode' in info
         # {'episode': {'r': 118.048395, 'l': 64, 't': 0.67222}}
+        # print(infos, f't={t},done={dones}')
+        # if dones[0]:
+        #     print('done')
+        #     exit()
+        if verbose:
+            tools.print_refresh(f'Evaluate Policy:{t}')
         for info in infos:
             maybeepinfo = info.get('episode')
             if maybeepinfo:
                 epinfos.append(maybeepinfo)
         if len(epinfos) >= evaluate_times:
             break
+    if verbose:
+        tools.print_refresh()
     return epinfos
 
 

@@ -16,12 +16,17 @@ def arg_parser_common():
     Create an argparse.ArgumentParser for run_mujoco.py.
     """
     parser = arg_parser()
-    parser.add_argument('--env', help='environment ID', type=str, default='Humanoid')
+    parser.add_argument('--env', help='environment ID', type=str, default='InvertedPendulum-v2')
+    parser.add_argument('--is_atari', default=False, action='store_true')
+
+    # parser.add_argument('--env', help='environment ID', type=str, default='PongNoFrameskip')
+    # parser.add_argument('--is_atari', default=True, action='store_true')
+
     parser.add_argument('--seed', help='RNG seed', type=int, default=0)
-    parser.add_argument('--num_timesteps', type=int, default=None)
 
 
-    parser.add_argument('--cliptype', default='kl2clip', type=str)
+    parser.add_argument('--cliptype', default='kl2clip', type=str)#wasserstein_wassersteinrollback_constant
+    # parser.add_argument('--cliprange', default=0.2, type=float)
     # import demjson
     parser.add_argument('--clipargs', default=dict(), type=json.loads)
 
@@ -32,7 +37,11 @@ def arg_parser_common():
             ratio_strict=dict(cliprange=0.2),
             ratio_rollback_constant=dict(cliprange=0.2, slope_rollback=-0.3),
 
+
             a2c=dict(cliprange=0.1),
+
+            wasserstein = dict(range=0.05, cliprange=0.2),
+            wasserstein_wassersteinrollback_constant = dict(range=0.05, slope_rollback=-0.4, cliprange=0.2),
 
             kl=dict(klrange=0.03, cliprange=0.2),
             kl_strict=dict(klrange=0.025, cliprange=0.2),
@@ -41,7 +50,7 @@ def arg_parser_common():
             kl_klrollback=dict(klrange=0.03, slope_rollback=-0.1, cliprange=0.2),
 
             # base_clip_lower, base_clip_upper
-            # kl2clip = dict(klrange=0.03, adjusttype='origin', cliprange=0.2, kl2clip_opttype='tabular'),
+            # kl2clip = dict(klrange=0.03, adjusttype='origin', cliprange=0.2, kl2clip_opttype='tabular', adaptive_range=''),
             kl2clip=dict(klrange=None, adjusttype='base_clip_upper', cliprange=0.2, kl2clip_opttype='tabular', adaptive_range=''),
             kl2clip_rollback=dict(klrange=None, adjusttype='base_clip_upper', cliprange=0.2, kl2clip_opttype='tabular', adaptive_range='', slope_rollback=-0.3),
 
@@ -69,7 +78,7 @@ def arg_parser_common():
 
             # kl2clip = dict(klrange=0.03, adjusttype='origin', cliprange=0.2)
             # kl2clip = dict( klrange=None, adjusttype='base_clip_lower', cliprange=0.2)
-            kl2clip=dict(klrange=0.03, adjusttype='base_clip_lower', cliprange=None),
+            kl2clip=dict(klrange=0.001, cliprange=0.1, kl2clip_opttype='tabular', adaptive_range=''),
             # klrange is used for kl2clip, which could be None. If it's None, it is adjusted by cliprange.
             # cliprange is used for value clip, which could be None. If it's None, it is adjusted by klrange.
 
@@ -87,8 +96,8 @@ def arg_parser_common():
     parser.add_argument('--policy_type', default=None, type=str)
 
     parser.add_argument('--log_dir_mode', default='finish_then_exit_else_overwrite', type=str)#overwrite,finish_then_exit_else_overwrite
-    parser.add_argument('--name_group', default='run', type=str)
-    parser.add_argument('--keys_group', default=['cliptype'], type=ast.literal_eval)
+    parser.add_argument('--name_group', default='tmp', type=str)
+    parser.add_argument('--keys_group', default=['cliptype','clipargs'], type=ast.literal_eval)
 
     # architecture of network
     parser.add_argument('--policy_variance_state_dependent', default=False, type=ast.literal_eval)
@@ -117,12 +126,13 @@ def arg_parser_common():
 
     parser.add_argument('--log_interval', default=1, type=int)
     parser.add_argument('--n_eval_epsiodes', default=1, type=int)
-    parser.add_argument('--eval_interval', default=None, type=int)
+    parser.add_argument('--num_timesteps', type=int, default=None)
+    parser.add_argument('--eval_interval', type=int, default=None)
     parser.add_argument('--save_interval', default=None, type=int)
     parser.add_argument('--save_debug', default=False, action='store_true')
-    parser.add_argument('--is_atari', default=False, action='store_true')
     args_default_all = \
         {
+            # MUJOCO
             MUJOCO: dict(
                 policy_type = dict(_default='MlpPolicyExt'),
                 n_steps = dict( _default=1024  ),
@@ -132,10 +142,11 @@ def arg_parser_common():
                 lr = dict(_default=3e-4),
                 coef_entropy = dict( _default=0 ),
                 eval_interval = dict( _default=1 ),
-                logstd = dict( HalfCheetah=-1.34, Humanoid=-1.34657, _default=0, ),
                 num_timesteps = dict( Humanoid=int(20e6),  _default=int(1e6) ),
                 save_interval = dict( _default=10 ),
+                logstd = dict( HalfCheetah=-1.34, Humanoid=-1.34657, _default=0, ),
             ),
+            # ATARI
             ATARI: dict(
                 policy_type=dict(_default='CnnPolicy'),
                 n_steps = dict( _default=128  ),
@@ -143,9 +154,10 @@ def arg_parser_common():
                 n_minibatches = dict( _default=4 ),
                 n_opt_epochs = dict( _default=4 ),
                 lr = dict(_default=2.5e-4 ),
-                coef_entropy= dict(_default=0.01),
-                eval_interval=dict(_default=20),
-                save_interval = dict(  _default=500 ),
+                coef_entropy= dict(_default=0),#TODO: tmp for kl2clip
+                eval_interval=dict(_default=-1),
+                num_timesteps=dict(_default=int(1e7)),
+                save_interval = dict(  _default=400 ),
             )
         }
     # parser.add_argument('--debug_halfcheetah', default=0, type=int)
@@ -165,10 +177,13 @@ def main():
     from dotmap import DotMap
     keys_exclude = [ 'coef_predict_task', 'is_multiprocess', 'n_envs', 'eval_interval', 'n_steps', 'n_minibatches',
         'play', 'n_eval_epsiodes', 'force_write', 'kl2clip_sharelogstd','policy_variance_state_dependent',
-                   'kl2clip_clip_clipratio', 'kl2clip_decay', 'lr', 'num_timesteps', 'gradient_rectify', 'rectify_scale','kl2clip_clipcontroltype', 'reward_scale', 'coef_predict_task','explore_additive_rate','explore_additive_threshold','explore_timesteps', 'debug_halfcheetah', 'name_project', 'env_pure', 'n_opt_epochs', 'coef_entropy', 'log_interval', 'save_interval', 'save_debug', 'clipargs']
+                   'kl2clip_clip_clipratio', 'kl2clip_decay', 'lr', 'num_timesteps', 'gradient_rectify', 'rectify_scale','kl2clip_clipcontroltype', 'reward_scale', 'coef_predict_task','explore_additive_rate','explore_additive_threshold','explore_timesteps', 'debug_halfcheetah', 'name_project', 'env_pure', 'n_opt_epochs', 'coef_entropy', 'log_interval', 'save_interval', 'save_debug', 'is_atari']
+    # 'is_atari'
 
 
     #  -------------------- prepare args
+
+
     args.env_pure = args.env.split('-v')[0]
 
     # env_mujocos = 'InvertedPendulum,InvertedDoublePendulum,HalfCheetah,Hopper,Walker2d,Ant,Reacher,Swimmer,Humanoid'
@@ -212,7 +227,7 @@ def main():
     args = tools_logger.prepare_dirs( args, key_first='env', keys_exclude=keys_exclude, dirs_type=['log' ], root_dir=root_dir )
     # --- prepare args for use
     args.cliptype = ClipType[ args.cliptype ]
-    args.eval_model = args.n_eval_epsiodes > 0
+
     args.zip_dirs = ['model','monitor']
     for d in args.zip_dirs:
         args[f'{d}_dir'] = osp.join(args.log_dir, d)
@@ -240,6 +255,7 @@ def main():
 
 
     # ------ prepare env
+    # args.eval_model = args.n_eval_epsiodes > 0
     if env_type == MUJOCO:
         def make_mujoco_env(rank=0):
             def _thunk():
@@ -258,7 +274,7 @@ def main():
         env = VecNormalize(env, reward_scale=args.reward_scale)
 
         env_test = None
-        if args.eval_model:
+        if args.n_eval_epsiodes > 0:
             if args.n_eval_epsiodes == 1:
                 env_test = DummyVecEnv([make_mujoco_env()])
             else:
@@ -271,9 +287,10 @@ def main():
         env = VecFrameStack(make_atari_env(args.env, num_env=args.n_envs, seed=args.seed), 4)
         env_test = None
         #  TODO : debug VecFrame
-        if args.eval_model:
+        if args.n_eval_epsiodes > 0:
             env_test = VecFrameStack(make_atari_env(args.env, num_env=args.n_eval_epsiodes, seed=args.seed), 4)
-
+            # env_test.reset()
+            # env_test.render()
     # ----------- learn
     if env_type == MUJOCO:
         lr = args.lr

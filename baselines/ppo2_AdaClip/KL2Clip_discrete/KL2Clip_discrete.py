@@ -1,7 +1,7 @@
 import pathos.multiprocessing as multiprocessing
 from scipy.optimize import fsolve
 
-from tools import load_vars
+
 from dotmap import DotMap
 
 import os
@@ -14,9 +14,6 @@ import matplotlib.pyplot as plt
 from tensorflow.python.framework import ops
 
 import tensorflow as tf
-import plt_tools
-
-from tools import save_vars
 from math import log, exp
 
 AVERAGE_CLIP = 'average-clip'
@@ -37,58 +34,24 @@ else:
 
 
 class KL2Clip(object):
-    def __init__(self, dim, batch_size=None, sharelogsigma=False, opt1Dkind='tabular'):
+    def __init__(self, opt1Dkind='tabular'):
         print(f'You are using KL2Clip_{opt1Dkind}.')
         if opt1Dkind == 'tabular':
             self.opt1D = KL2Clip_tabular()
-        elif opt1Dkind == 'fsolve':
+        elif opt1Dkind == 'solve':
             self.opt1D = KL2Clip_fsolve()
         else:
-            raise NotImplementedError('Unknown opt1Dkind, please use tabular or nn')
+            raise NotImplementedError('Unknown opt1Dkind, please use tabular or solve')
 
     def get_cliprange_by_delta(self, delta):
         raise NotImplementedError
 
     def __call__(self,
                  pas=None,
-                 delta=None, clipcontroltype=None, cliprange=None,
-                 sharelogsigma=False, clip_clipratio=None,
+                 delta=None,
                  verbose=False, **kwargs):
-        '''
-        delta is not None: compute with delta
-        delta is None: compute delta with (clipcontroltype, cliprange)
-        :param mu0_logsigma0_cat:
-        :type mu0_logsigma0_cat:
-        :param mu0_logsigma0_tuple:
-        :type mu0_logsigma0_tuple:
-        :param delta:
-        :type delta:
-        :param a:
-        :type a:
-        :param clip_clipratio:
-        :type clip_clipratio:
-        :param clipcontroltype:
-        :type clipcontroltype:
-        :param cliprange:
-        :type cliprange:
-        :param silent:
-        :type silent:
-        :return:
-        :rtype:
-        '''
-        #  TODO: 修改接口
-        assert not sharelogsigma
-        if delta is None:
-            if clipcontroltype == BASE_CLIP:
-                # TODO: baseclip
-                raise NotImplementedError
-            else:
-                raise NotImplementedError
-
-
-
         ratio = self.opt1D(pas=pas, delta=delta)
-        # TODO: 这里的处理方式需要斟酌
+        # TODO: 有些值会出现nan的情况,但是这里的处理方式需要斟酌
         ratio.max[np.isnan(ratio.max)] = np.nanmin(ratio.max)
         ratio.min[np.isnan(ratio.min)] = np.nanmax(ratio.min)
         return DotMap(

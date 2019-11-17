@@ -12,6 +12,7 @@ Networks are trained using [tensorflow1.10](https://www.tensorflow.org/) and Pyt
 ```
 git clone --recursive https://github.com/wangyuhuix/TRGPPO
 cd TRGPPO
+pip install -r requirements.txt
 ```
 
 
@@ -26,12 +27,13 @@ cd TRGPPO
 
 ### Continuous Task
 
-TRGPPO can be run by calling:
-
 ```shell
 python -m baselines.ppo2_AdaClip.run --env=InvertedPendulum-v2 --seed=0
 ```
 
 ### Discrete Task
 
-To be coming soon!
+```
+python -m baselines.ppo2_AdaClip.run --env=BeamRiderNoFrameskip-v4 --seed=0 --is_atari
+```
+
