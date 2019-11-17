@@ -20,18 +20,12 @@ AVERAGE_CLIP = 'average-clip'
 BASE_CLIP = 'base-clip'
 NONE_CLIP = 'none-clip'
 TabularActionPrecision = 4
-path_roots = {
-    'xiaoming': '/media/d/e/et/baselines/KL2Clip',
-    'hugo': '/home/hugo/Desktop/wxm/KL2Clip',
-}
 
-for key in path_roots:
-    if tools.ispc(key):
-        path_root = path_roots[key]
-        break
-else:
-    path_root = f"{os.environ['HOME']}/xm/et/KL2Clip"  # TODO
+from toolsm import logger
+import baselines
+path_root = logger.get_logger_dir('baselines/KL2Clip', baselines, 'results/KL2Clip' )
 
+print(f'path_root:{path_root}')
 
 class KL2Clip(object):
     def __init__(self, opt1Dkind='tabular'):
