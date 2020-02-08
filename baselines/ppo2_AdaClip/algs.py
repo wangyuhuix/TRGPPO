@@ -16,6 +16,7 @@ class ClipType(Enum):
     kl_ratiorollback = 22
     kl_klrollback_constant = 23
     kl_klrollback = 24
+    kl_klrollback_constant_withratio = 25
 
     kl2clip = 31
     kl2clip_rollback = 32
@@ -25,6 +26,20 @@ class ClipType(Enum):
 
     adaptiverange_advantage = 50
 
+    wasserstein = 60
+    wasserstein_rollback_constant = 61
+
+    totalvariation=70
+    totalvariation_rollback_constant = 72
 
 MUJOCO = 'mujoco'
 ATARI = 'atari'
+
+alg2cliptype = {
+    'ppo': 'ratio',
+    'trgppo': 'kl2clip',
+    'pporb': 'ratio_rollback',
+    'trppo': 'kl',
+    'trpporb': 'kl_ratiorollback',
+    'trulyppo': 'kl_klrollback_constant_withratio'
+}

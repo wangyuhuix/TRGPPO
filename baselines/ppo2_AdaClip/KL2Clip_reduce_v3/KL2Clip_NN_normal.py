@@ -29,7 +29,7 @@ TabularActionPrecision = 5
 
 import baselines
 from toolsm import logger
-path_root = logger.get_logger_dir('baselines/KL2Clip', baselines, 'results/KL2Clip' )
+path_root = logger.get_logger_dir('baselines/KL2Clip', 'results/KL2Clip', baselines )
 
 # print(path_root)
 # exit()
@@ -52,11 +52,9 @@ def batch_norm_relu(inputs, is_training):
 from toolsm import process as tools_process
 
 path_root_tabular = f'{path_root}/tabular'
-tools.mkdir(path_root_tabular)
 path_root_tabular += f'/precision_{TabularActionPrecision}'
-tools.mkdir(path_root_tabular)
 path_root_tabluar_locker = f'{path_root_tabular}/locker'
-tools.mkdir(path_root_tabluar_locker)
+tools.mkdirs(path_root_tabluar_locker)
 
 
 class KL2Clip_tabular(object):
@@ -130,7 +128,7 @@ class KL2Clip_NN(object):
         self.path_model = f'{path_root}/model/reduce_v3/{self.dir}'
         self.path_model = f'{path_root}/model/reduce_v3/{self.dir}'
         for f_ in ['model.ckpt-408582.data-00000-of-00001', 'model.ckpt-408582.index','checkpoint']:
-            assert os.path.exists(f'{self.path_model}/{f_}'), f'{self.path_model}/{f_} not exist'
+            assert os.path.exists(f'{self.path_model}/{f_}'), f'Make sure the NN model for transform kl to cliprange exist!\n{self.path_model}/{f_}'
         self.pool = multiprocessing.Pool(4)
         self.regressor = tf.estimator.Estimator(
             model_fn=my_model,

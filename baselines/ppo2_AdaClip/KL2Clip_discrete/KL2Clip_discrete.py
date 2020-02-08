@@ -23,9 +23,9 @@ TabularActionPrecision = 4
 
 from toolsm import logger
 import baselines
-path_root = logger.get_logger_dir('baselines/KL2Clip', baselines, 'results/KL2Clip' )
+path_root = logger.get_logger_dir('baselines/KL2Clip', 'results/KL2Clip', baselines )
 
-print(f'path_root:{path_root}')
+# print(f'path_root:{path_root}')
 
 class KL2Clip(object):
     def __init__(self, opt1Dkind='tabular'):

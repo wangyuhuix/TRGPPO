@@ -13,3 +13,4 @@ gym==0.10.4
 pathos==0.2.2.1
 dotmap==1.2.20
 mpi4py
+pathos

@@ -34,6 +34,6 @@ python -m baselines.ppo2_AdaClip.run --env=InvertedPendulum-v2 --seed=0
 ### Discrete Task
 
 ```
-python -m baselines.ppo2_AdaClip.run --env=BeamRiderNoFrameskip-v4 --seed=0 --is_atari
+python -m baselines.ppo2_AdaClip.run --env=BeamRiderNoFrameskip-v4 --seed=0 --isatari
 ```
 
