@@ -1,9 +1,9 @@
 gym[mujoco,atari,classic_control,robotics]
 demjson==2.2.4
-joblib==0.12.0
+joblib==1.2.0
 pandas==0.22.0
 matplotlib==3.0.2
-joblib==0.12.0
+joblib==1.2.0
 tensorflow_gpu==1.15.2
 cloudpickle==0.5.3
 opencv_python==3.4.0.12
